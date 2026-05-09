@@ -120,14 +120,15 @@ export default function CoffeeFinder() {
         const { latitude: lat, longitude: lng } = pos.coords;
         setGpsCoords({ lat, lng });
         setGpsState('granted');
-        // Reverse geocode to get a readable label
+        // Reverse geocode via our server route (key stays server-side)
         try {
-          const res = await fetch(
-            `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyDbVWNS32qP4HfWdlIjw6M29wtNB7Zu7wg`
-          );
+          const res = await fetch('/api/geocode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat, lng }),
+          });
           const data = await res.json();
-          const label = data.results?.[2]?.formatted_address || data.results?.[0]?.formatted_address || 'your location';
-          setGpsLabel(label);
+          setGpsLabel(data.label || 'your location');
         } catch {
           setGpsLabel('your location');
         }
