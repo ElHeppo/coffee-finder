@@ -108,7 +108,7 @@ export default function CoffeeFinder() {
     }
   };
 
-  const handleUseGPS = () => {
+  const handleUseGPS = async () => {
     if (!navigator.geolocation) {
       setError('GPS not supported in this browser');
       return;
@@ -120,7 +120,6 @@ export default function CoffeeFinder() {
         const { latitude: lat, longitude: lng } = pos.coords;
         setGpsCoords({ lat, lng });
         setGpsState('granted');
-        // Reverse geocode via our server route (key stays server-side)
         try {
           const res = await fetch('/api/geocode', {
             method: 'POST',
@@ -135,9 +134,16 @@ export default function CoffeeFinder() {
       },
       () => {
         setGpsState('denied');
-        setError('Could not access your location. Enter it manually below.');
+        setError('Could not access your location. Try typing your city below.');
       }
     );
+  };
+
+  const handleManualSearch = () => {
+    if (!query.trim()) return;
+    setGpsState('idle');
+    setGpsCoords(null);
+    handleFind();
   };
 
   const handleFind = async () => {
@@ -271,8 +277,6 @@ export default function CoffeeFinder() {
 
   // LOCATION
   if (step === 'location') {
-    const canSearch = (gpsState === 'granted' && gpsCoords) || query.trim();
-
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={{ background: bg }}>
         <div className="w-full max-w-xl">
@@ -286,39 +290,53 @@ export default function CoffeeFinder() {
             <div className="text-4xl mb-4 text-center">📍</div>
             <h2 className="text-2xl font-bold text-amber-900 mb-2 text-center">Where are you?</h2>
             <p className="text-amber-600 text-sm text-center mb-8">
-              Use your GPS or type a city, neighbourhood, or street.
+              Choose one of the two options below.
             </p>
 
-            {/* GPS Button */}
-            <button
-              onClick={handleUseGPS}
-              disabled={gpsState === 'loading'}
-              className="w-full py-4 rounded-2xl font-bold text-white mb-4 transition-all duration-200 hover:opacity-90 active:scale-95 disabled:opacity-60"
-              style={{ background: gpsState === 'granted' ? 'linear-gradient(135deg, #16a34a, #15803d)' : 'linear-gradient(135deg, #3b82f6, #1d4ed8)' }}
-            >
-              {gpsState === 'loading' && '⏳ Getting your location...'}
-              {gpsState === 'granted' && `✓ Using GPS — ${gpsLabel}`}
-              {(gpsState === 'idle' || gpsState === 'denied') && '📍 Use my current location'}
-            </button>
-
-            {/* Divider */}
-            <div className="flex items-center gap-3 mb-4">
-              <div className="flex-1 h-px bg-amber-200" />
-              <span className="text-amber-400 text-xs font-medium">or type it</span>
-              <div className="flex-1 h-px bg-amber-200" />
+            {/* OPTION 1: GPS */}
+            <div className="rounded-2xl border-2 border-amber-200 p-5 mb-4">
+              <p className="text-xs font-bold text-amber-500 uppercase tracking-wider mb-3">Option 1 — Use my location</p>
+              {gpsState === 'granted' ? (
+                <div className="flex items-center justify-between">
+                  <p className="text-amber-800 text-sm font-medium">✓ {gpsLabel}</p>
+                  <button onClick={() => { setGpsState('idle'); setGpsCoords(null); }} className="text-xs text-amber-400 underline">Clear</button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleUseGPS}
+                  disabled={gpsState === 'loading'}
+                  className="w-full py-3 rounded-xl font-bold text-white transition-all duration-200 hover:opacity-90 active:scale-95 disabled:opacity-60"
+                  style={{ background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)' }}
+                >
+                  {gpsState === 'loading' ? '⏳ Getting your location...' : '📍 Detect my location'}
+                </button>
+              )}
             </div>
 
-            {/* Manual input */}
-            <input
-              type="text"
-              value={query}
-              onChange={e => { setQuery(e.target.value); if (gpsState === 'granted') setGpsState('idle'); }}
-              onKeyDown={e => e.key === 'Enter' && canSearch && handleFind()}
-              placeholder="e.g. Shoreditch London, Prenzlauer Berg Berlin..."
-              className="w-full px-5 py-4 rounded-2xl border-2 border-amber-200 bg-white text-amber-900 placeholder-amber-300 text-sm font-medium focus:outline-none focus:border-amber-400 mb-6"
-            />
+            {/* OPTION 2: Manual */}
+            <div className="rounded-2xl border-2 border-amber-200 p-5 mb-6">
+              <p className="text-xs font-bold text-amber-500 uppercase tracking-wider mb-3">Option 2 — Type a city or neighbourhood</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && query.trim() && handleManualSearch()}
+                  placeholder="e.g. Shoreditch London, Bangkok..."
+                  className="flex-1 px-4 py-3 rounded-xl border-2 border-amber-200 bg-white text-amber-900 placeholder-amber-300 text-sm font-medium focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  onClick={handleManualSearch}
+                  disabled={!query.trim()}
+                  className="px-4 py-3 rounded-xl font-bold text-white transition-all hover:opacity-90 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
+                >
+                  Go
+                </button>
+              </div>
+            </div>
 
-            {/* Radius picker */}
+            {/* Radius picker — shared */}
             <div className="mb-6">
               <p className="text-xs font-bold text-amber-600 uppercase tracking-wider mb-3">Search radius</p>
               <div className="grid grid-cols-4 gap-2">
@@ -343,14 +361,16 @@ export default function CoffeeFinder() {
               <p className="text-red-500 text-sm mb-4 bg-red-50 rounded-xl p-3">{error}</p>
             )}
 
-            <button
-              onClick={handleFind}
-              disabled={!canSearch}
-              className="w-full py-4 rounded-2xl font-bold text-white text-lg transition-all duration-200 hover:opacity-90 hover:shadow-lg active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
-            >
-              Find My Coffee Shops ☕
-            </button>
+            {/* GPS search button — only shown when GPS is granted */}
+            {gpsState === 'granted' && gpsCoords && (
+              <button
+                onClick={handleFind}
+                className="w-full py-4 rounded-2xl font-bold text-white text-lg transition-all duration-200 hover:opacity-90 hover:shadow-lg active:scale-95"
+                style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
+              >
+                Find My Coffee Shops ☕
+              </button>
+            )}
           </div>
         </div>
       </div>
