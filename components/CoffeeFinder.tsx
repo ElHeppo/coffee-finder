@@ -65,6 +65,13 @@ const QUESTIONS = [
   },
 ];
 
+const RADIUS_OPTIONS = [
+  { label: '500m', value: 500 },
+  { label: '1 km', value: 1000 },
+  { label: '2 km', value: 2000 },
+  { label: '5 km', value: 5000 },
+];
+
 interface Recommendation {
   name: string;
   address: string;
@@ -76,11 +83,18 @@ interface Recommendation {
 
 type Step = 'intro' | 'quiz' | 'location' | 'loading' | 'results';
 
+const bg = 'linear-gradient(160deg, #fef3c7 0%, #fde8d8 50%, #f9d9c5 100%)';
+
 export default function CoffeeFinder() {
   const [step, setStep] = useState<Step>('intro');
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [city, setCity] = useState('');
+  const [query, setQuery] = useState('');
+  const [radius, setRadius] = useState(1000);
+  const [gpsState, setGpsState] = useState<'idle' | 'loading' | 'granted' | 'denied'>('idle');
+  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsLabel, setGpsLabel] = useState('');
+  const [locationLabel, setLocationLabel] = useState('');
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [error, setError] = useState('');
 
@@ -94,25 +108,69 @@ export default function CoffeeFinder() {
     }
   };
 
+  const handleUseGPS = () => {
+    if (!navigator.geolocation) {
+      setError('GPS not supported in this browser');
+      return;
+    }
+    setGpsState('loading');
+    setError('');
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude: lat, longitude: lng } = pos.coords;
+        setGpsCoords({ lat, lng });
+        setGpsState('granted');
+        // Reverse geocode to get a readable label
+        try {
+          const res = await fetch(
+            `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyDbVWNS32qP4HfWdlIjw6M29wtNB7Zu7wg`
+          );
+          const data = await res.json();
+          const label = data.results?.[2]?.formatted_address || data.results?.[0]?.formatted_address || 'your location';
+          setGpsLabel(label);
+        } catch {
+          setGpsLabel('your location');
+        }
+      },
+      () => {
+        setGpsState('denied');
+        setError('Could not access your location. Enter it manually below.');
+      }
+    );
+  };
+
   const handleFind = async () => {
-    if (!city.trim()) return;
+    const usingGPS = gpsState === 'granted' && gpsCoords;
+    const usingManual = query.trim();
+
+    if (!usingGPS && !usingManual) return;
+
     setStep('loading');
     setError('');
 
     try {
+      const body: Record<string, unknown> = { preferences: answers, radius };
+
+      if (usingGPS) {
+        body.lat = gpsCoords!.lat;
+        body.lng = gpsCoords!.lng;
+        body.locationLabel = gpsLabel;
+      } else {
+        body.query = query.trim();
+      }
+
       const res = await fetch('/api/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ city: city.trim(), preferences: answers }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Something went wrong');
-      }
+      if (!res.ok) throw new Error(data.error || 'Something went wrong');
 
       setRecommendations(data.recommendations);
+      setLocationLabel(data.locationLabel || query || gpsLabel);
       setStep('results');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -124,12 +182,15 @@ export default function CoffeeFinder() {
     setStep('intro');
     setCurrentQ(0);
     setAnswers({});
-    setCity('');
+    setQuery('');
+    setRadius(1000);
+    setGpsState('idle');
+    setGpsCoords(null);
+    setGpsLabel('');
+    setLocationLabel('');
     setRecommendations([]);
     setError('');
   };
-
-  const bg = 'linear-gradient(160deg, #fef3c7 0%, #fde8d8 50%, #f9d9c5 100%)';
 
   // INTRO
   if (step === 'intro') {
@@ -145,7 +206,7 @@ export default function CoffeeFinder() {
               &ldquo;New city, no idea where to go? We&apos;ve got you.&rdquo;
             </p>
             <p className="text-amber-800 text-sm leading-relaxed mb-8 px-4">
-              Answer 6 quick questions about what you love, tell us where you are, and we&apos;ll match you with the 3 best coffee shops in the area — personalised to you.
+              Answer 6 quick questions about what you love, share your location, and we&apos;ll match you with the 5 best coffee shops nearby — personalised to you.
             </p>
             <button
               onClick={() => setStep('quiz')}
@@ -164,7 +225,7 @@ export default function CoffeeFinder() {
   // QUIZ
   if (step === 'quiz') {
     const q = QUESTIONS[currentQ];
-    const progress = ((currentQ) / QUESTIONS.length) * 100;
+    const progress = (currentQ / QUESTIONS.length) * 100;
 
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={{ background: bg }}>
@@ -209,6 +270,8 @@ export default function CoffeeFinder() {
 
   // LOCATION
   if (step === 'location') {
+    const canSearch = (gpsState === 'granted' && gpsCoords) || query.trim();
+
     return (
       <div className="min-h-screen flex items-center justify-center p-4" style={{ background: bg }}>
         <div className="w-full max-w-xl">
@@ -218,26 +281,70 @@ export default function CoffeeFinder() {
               <span className="font-bold text-amber-800 text-sm">Coffee Finder</span>
             </div>
           </div>
-          <div className="bg-white/85 backdrop-blur-sm rounded-3xl p-8 shadow-xl text-center" style={{ border: '1px solid rgba(255,255,255,0.6)' }}>
-            <div className="text-5xl mb-4">📍</div>
-            <h2 className="text-2xl font-bold text-amber-900 mb-2">Where are you?</h2>
-            <p className="text-amber-600 text-sm mb-8">
-              Enter your city or neighbourhood and we&apos;ll find the best matches nearby.
+          <div className="bg-white/85 backdrop-blur-sm rounded-3xl p-8 shadow-xl" style={{ border: '1px solid rgba(255,255,255,0.6)' }}>
+            <div className="text-4xl mb-4 text-center">📍</div>
+            <h2 className="text-2xl font-bold text-amber-900 mb-2 text-center">Where are you?</h2>
+            <p className="text-amber-600 text-sm text-center mb-8">
+              Use your GPS or type a city, neighbourhood, or street.
             </p>
+
+            {/* GPS Button */}
+            <button
+              onClick={handleUseGPS}
+              disabled={gpsState === 'loading'}
+              className="w-full py-4 rounded-2xl font-bold text-white mb-4 transition-all duration-200 hover:opacity-90 active:scale-95 disabled:opacity-60"
+              style={{ background: gpsState === 'granted' ? 'linear-gradient(135deg, #16a34a, #15803d)' : 'linear-gradient(135deg, #3b82f6, #1d4ed8)' }}
+            >
+              {gpsState === 'loading' && '⏳ Getting your location...'}
+              {gpsState === 'granted' && `✓ Using GPS — ${gpsLabel}`}
+              {(gpsState === 'idle' || gpsState === 'denied') && '📍 Use my current location'}
+            </button>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-1 h-px bg-amber-200" />
+              <span className="text-amber-400 text-xs font-medium">or type it</span>
+              <div className="flex-1 h-px bg-amber-200" />
+            </div>
+
+            {/* Manual input */}
             <input
               type="text"
-              value={city}
-              onChange={e => setCity(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleFind()}
-              placeholder="e.g. Vienna, Shoreditch London, Brooklyn NY..."
-              className="w-full px-5 py-4 rounded-2xl border-2 border-amber-200 bg-white text-amber-900 placeholder-amber-300 text-sm font-medium focus:outline-none focus:border-amber-400 mb-4"
+              value={query}
+              onChange={e => { setQuery(e.target.value); if (gpsState === 'granted') setGpsState('idle'); }}
+              onKeyDown={e => e.key === 'Enter' && canSearch && handleFind()}
+              placeholder="e.g. Shoreditch London, Prenzlauer Berg Berlin..."
+              className="w-full px-5 py-4 rounded-2xl border-2 border-amber-200 bg-white text-amber-900 placeholder-amber-300 text-sm font-medium focus:outline-none focus:border-amber-400 mb-6"
             />
+
+            {/* Radius picker */}
+            <div className="mb-6">
+              <p className="text-xs font-bold text-amber-600 uppercase tracking-wider mb-3">Search radius</p>
+              <div className="grid grid-cols-4 gap-2">
+                {RADIUS_OPTIONS.map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setRadius(opt.value)}
+                    className="py-2 rounded-xl text-sm font-bold transition-all duration-150"
+                    style={{
+                      background: radius === opt.value ? 'linear-gradient(135deg, #f59e0b, #d97706)' : '#fef3c7',
+                      color: radius === opt.value ? 'white' : '#92400e',
+                      border: radius === opt.value ? 'none' : '1px solid #fde68a',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {error && (
               <p className="text-red-500 text-sm mb-4 bg-red-50 rounded-xl p-3">{error}</p>
             )}
+
             <button
               onClick={handleFind}
-              disabled={!city.trim()}
+              disabled={!canSearch}
               className="w-full py-4 rounded-2xl font-bold text-white text-lg transition-all duration-200 hover:opacity-90 hover:shadow-lg active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
             >
@@ -258,7 +365,7 @@ export default function CoffeeFinder() {
             <div className="text-6xl mb-6 animate-bounce">☕</div>
             <h2 className="text-2xl font-bold text-amber-900 mb-3">Brewing your results...</h2>
             <p className="text-amber-600 text-sm">
-              We&apos;re searching coffee shops in {city}, reading through reviews, and finding your perfect matches.
+              Searching nearby cafés, reading reviews, and finding your top 5 matches.
             </p>
             <div className="mt-8 flex justify-center gap-2">
               {[0, 1, 2].map(i => (
@@ -287,8 +394,8 @@ export default function CoffeeFinder() {
         </div>
 
         <div className="bg-white/85 backdrop-blur-sm rounded-3xl p-6 shadow-xl mb-4 text-center" style={{ border: '1px solid rgba(255,255,255,0.6)' }}>
-          <h2 className="text-2xl font-bold text-amber-900 mb-1">Your matches in {city}</h2>
-          <p className="text-amber-600 text-sm">Based on your preferences + real reviews</p>
+          <h2 className="text-2xl font-bold text-amber-900 mb-1">Your top 5 nearby</h2>
+          <p className="text-amber-600 text-sm">📍 {locationLabel}</p>
         </div>
 
         <div className="flex flex-col gap-4">
@@ -300,7 +407,7 @@ export default function CoffeeFinder() {
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="w-7 h-7 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center">
+                  <span className="w-7 h-7 rounded-full bg-amber-100 text-amber-700 text-xs font-bold flex items-center justify-center flex-shrink-0">
                     {i + 1}
                   </span>
                   <h3 className="font-bold text-amber-900 text-lg leading-tight">{rec.name}</h3>

@@ -23,40 +23,29 @@ interface PlaceResult {
   reviews?: Array<{ text: { text: string }; rating: number }>;
   currentOpeningHours?: { openNow: boolean };
   priceLevel?: string;
-  websiteUri?: string;
 }
 
-async function searchCoffeeShops(city: string): Promise<PlaceResult[]> {
+async function searchCoffeeShops(
+  location: { lat: number; lng: number },
+  radius: number
+): Promise<PlaceResult[]> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_PLACES_API_KEY not set');
 
-  // First geocode the city to get coordinates
-  const geocodeRes = await fetch(
-    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(city)}&key=${apiKey}`
-  );
-  const geocodeData = await geocodeRes.json();
-
-  if (!geocodeData.results?.length) {
-    throw new Error(`Could not find location: ${city}`);
-  }
-
-  const { lat, lng } = geocodeData.results[0].geometry.location;
-
-  // Search for coffee shops using Places API (New)
   const placesRes = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.editorialSummary,places.reviews,places.currentOpeningHours,places.priceLevel,places.websiteUri',
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.editorialSummary,places.reviews,places.currentOpeningHours,places.priceLevel',
     },
     body: JSON.stringify({
       includedTypes: ['cafe'],
-      maxResultCount: 20,
+      maxResultCount: 10,
       locationRestriction: {
         circle: {
-          center: { latitude: lat, longitude: lng },
-          radius: 2000,
+          center: { latitude: location.lat, longitude: location.lng },
+          radius,
         },
       },
       rankPreference: 'POPULARITY',
@@ -67,11 +56,23 @@ async function searchCoffeeShops(city: string): Promise<PlaceResult[]> {
   return placesData.places || [];
 }
 
+async function geocode(query: string): Promise<{ lat: number; lng: number; label: string }> {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  const res = await fetch(
+    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`
+  );
+  const data = await res.json();
+  if (!data.results?.length) throw new Error(`Could not find location: ${query}`);
+  const { lat, lng } = data.results[0].geometry.location;
+  const label = data.results[0].formatted_address;
+  return { lat, lng, label };
+}
+
 function summarisePlaces(places: PlaceResult[]): string {
   return places.map((p, i) => {
     const reviews = p.reviews
-      ?.slice(0, 3)
-      .map(r => `"${r.text?.text?.substring(0, 200)}"`)
+      ?.slice(0, 2)
+      .map(r => `"${r.text?.text?.substring(0, 120)}"`)
       .join(' | ') || 'No reviews available';
 
     return `${i + 1}. ${p.displayName?.text}
@@ -87,16 +88,32 @@ function summarisePlaces(places: PlaceResult[]): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const { city, preferences }: { city: string; preferences: Preferences } = await req.json();
+    const body = await req.json();
+    const { preferences, radius = 1500 }: { preferences: Preferences; radius: number } = body;
 
-    if (!city || !preferences) {
-      return NextResponse.json({ error: 'Missing city or preferences' }, { status: 400 });
+    // Accept either GPS coords or a text query
+    let location: { lat: number; lng: number };
+    let locationLabel: string;
+
+    if (body.lat && body.lng) {
+      location = { lat: body.lat, lng: body.lng };
+      locationLabel = body.locationLabel || 'your location';
+    } else if (body.query) {
+      const geocoded = await geocode(body.query);
+      location = { lat: geocoded.lat, lng: geocoded.lng };
+      locationLabel = geocoded.label;
+    } else {
+      return NextResponse.json({ error: 'Provide either GPS coordinates or a location query' }, { status: 400 });
     }
 
-    const places = await searchCoffeeShops(city);
+    if (!preferences) {
+      return NextResponse.json({ error: 'Missing preferences' }, { status: 400 });
+    }
+
+    const places = await searchCoffeeShops(location, radius);
 
     if (!places.length) {
-      return NextResponse.json({ error: 'No coffee shops found in that location' }, { status: 404 });
+      return NextResponse.json({ error: 'No coffee shops found nearby. Try increasing the radius.' }, { status: 404 });
     }
 
     const placesSummary = summarisePlaces(places);
@@ -112,15 +129,15 @@ export async function POST(req: NextRequest) {
 
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-    const prompt = `You are a coffee shop recommendation expert. Based on a user's preferences and a list of real coffee shops with reviews, recommend the 3 best matches.
+    const prompt = `You are a coffee shop recommendation expert. Based on a user's preferences and a list of real coffee shops with reviews, recommend the 5 best matches.
 
 USER PREFERENCES:
 ${userProfile}
 
-COFFEE SHOPS IN ${city}:
+COFFEE SHOPS NEAR ${locationLabel}:
 ${placesSummary}
 
-Return ONLY a valid JSON array with exactly 3 objects. No explanation, no markdown, no code fences, just the raw JSON array. Each object must have:
+Return ONLY a valid JSON array with exactly 5 objects. No explanation, no markdown, no code fences, just the raw JSON array. Each object must have:
 - name (string)
 - address (string)
 - rating (number or null)
@@ -128,15 +145,14 @@ Return ONLY a valid JSON array with exactly 3 objects. No explanation, no markdo
 - bestFor (string, short phrase like "Working alone" or "Quick espresso")
 - mapsUrl (string)
 
-Pick the genuinely best matches based on the reviews and their stated preferences. If reviews mention noisy music but user wants quiet, deprioritise it. Be specific in matchReason.`;
+Pick the genuinely best matches based on the reviews and their stated preferences. If reviews mention noisy music but user wants quiet, deprioritise it. Be specific in matchReason. If fewer than 5 good matches exist, still return 5 — rank the best ones first.`;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text().trim();
-
-    // Strip markdown code fences if Gemini adds them
     const cleaned = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     const recommendations = JSON.parse(cleaned);
-    return NextResponse.json({ recommendations });
+
+    return NextResponse.json({ recommendations, locationLabel });
   } catch (err) {
     console.error(err);
     const message = err instanceof Error ? err.message : 'Something went wrong';
